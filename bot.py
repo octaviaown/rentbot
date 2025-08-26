@@ -63,7 +63,6 @@ class AddListing(StatesGroup):
     post_url      = State()   # если "да" — URL
     orig_text     = State()   # если "нет" — текст оригинала
     contact       = State()   # ссылка для связи (контакт автора)
-    delivery      = State()   # выбор: LINK или TEXT
     photos_choice = State()   # добавить фото?
     photos        = State()   # загрузка фото (до 9)
 
@@ -205,14 +204,6 @@ def kb_yes_no_link() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add")]
     ])
 
-def kb_delivery(allow_link_mode: bool) -> InlineKeyboardMarkup:
-    rows = []
-    if allow_link_mode:
-        rows.append([InlineKeyboardButton(text="🔗 ЛИНК — отправлять ссылку на оригинал", callback_data="delivery:LINK")])
-    rows.append([InlineKeyboardButton(text="📝 TEXT — текст оригинала + контакт", callback_data="delivery:TEXT")])
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_add")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
 def kb_channel_text_confirm() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👍 Всё верно", callback_data="chantext:ok")],
@@ -266,8 +257,7 @@ async def cmd_start(m: Message, command: CommandObject):
         row = db_get(listing_id)
         if row:
             channel_text, _, post_url, deliver, _, *_ = row
-            hint = "ℹ️ После оплаты получишь ссылку на оригинальный пост с прямым контактом." if (deliver == "LINK" and post_url) \
-                   else "ℹ️ После оплаты получишь прямой контакт автора оригинального объявления."
+            hint = "ℹ️ После оплаты получишь оригинальный текст и контакт автора; если есть ссылка на оригинал — пришлю её тоже."
             await m.answer(
                 f"📋 Проверь объявление (ID {listing_id}):\n\n{channel_text}\n\n{hint}",
                 reply_markup=kb_confirm(listing_id)
@@ -288,8 +278,9 @@ async def on_id(m: Message):
     if not row:
         return await m.answer("⚠️ Такого ID нет. Проверь в канале или напиши администратору.", reply_markup=kb_support())
     channel_text, _, post_url, deliver, _, *_ = row
-    hint = "ℹ️ После оплаты получишь ссылку на оригинальный пост и контакт автора объявления." if (deliver == "LINK" and post_url) \
-           else "ℹ️ После оплаты получишь прямой контакт автора оригинального объявления."
+    hint = (
+    "ℹ️ После оплаты я пришлю текст оригинального объявления и прямой контакт автора. "
+)
     await m.answer(f"📋 Проверь объявление (ID {listing_id}):\n\n{channel_text}\n\n{hint}", reply_markup=kb_confirm(listing_id))
 
 @r_public.callback_query(F.data.startswith("confirm:"))
@@ -313,21 +304,25 @@ async def on_confirm(call: CallbackQuery):
     await call.answer()
 
 # ───────Клиент: оплата 
+# ───────Клиент: оплата / выдача доступа
 async def _deliver_access(user_id: int, listing_id: str):
     row = db_get(listing_id)
     if not row:
-        await bot.send_message(user_id, "❌ Объявление не найдено. Напиши администратору.", reply_markup=kb_support())
+        await bot.send_message(
+            user_id,
+            "❌ Объявление не найдено. Напиши администратору.",
+            reply_markup=kb_support()
+        )
         return
 
-    channel_text, contact_link, post_url, deliver, orig_text, *_ = row
-    if deliver == "LINK" and post_url:
-        await bot.send_message(user_id, "✅ Оплата получена (демо/реальная).\nОтправляю оригинальный пост — там есть прямой контакт владельца.")
-        await bot.send_message(user_id, f"🔗 {post_url}", reply_markup=kb_support(listing_id))
-    else:
-        await bot.send_message(user_id, "✅ Оплата получена (демо/реальная).\nИсточник не позволяет делиться постом. Вот текст и контакт для связи.")
-        final_text = (orig_text or "").strip() or channel_text
-        await bot.send_message(user_id, f"📝 Оригинальный текст:\n\n{final_text}")
-        await bot.send_message(user_id, f"🔗 Контакт для связи:\n{contact_link}", reply_markup=kb_support(listing_id))
+    channel_text, contact_link, post_url, _deliver, orig_text, *_ = row
+    final_text = (orig_text or "").strip() or channel_text
+
+    await bot.send_message(user_id, "✅ Оплата получена.\nВот данные по объявлению:")
+    await bot.send_message(user_id, f"📝 Оригинальный текст:\n\n{final_text}")
+    await bot.send_message(user_id, f"📞 Контакт для связи:\n{contact_link}", reply_markup=kb_support(listing_id))
+    if post_url:
+        await bot.send_message(user_id, f"🔗 Ссылка на оригинал:\n{post_url}")
 
 @r_public.callback_query(F.data.startswith("pay:"))
 async def on_pay(call: CallbackQuery):
@@ -342,7 +337,7 @@ async def on_pay(call: CallbackQuery):
         await _deliver_access(call.from_user.id, listing_id)
         return await call.answer()
 
-    # ПРОД: реальный счёт
+    # ПРОД: реальный счёт (один раз)
     try:
         price = LabeledPrice(label=f"Доступ к объявлению {listing_id}", amount=PRICE_HAL)
         await bot.send_invoice(
@@ -570,30 +565,9 @@ async def set_orig_text(message: Message, state: FSMContext):
 @r_admin.message(StateFilter(AddListing.contact), F.text)
 async def set_contact_link(message: Message, state: FSMContext):
     await state.update_data(link=message.text.strip())
-    data = await state.get_data()
-    allow_link_mode = bool(data.get("post_url"))
-    if allow_link_mode:
-        await message.answer("⚙️ Выбери, **что получит покупатель**:", reply_markup=kb_delivery(True))
-        await state.set_state(AddListing.delivery)
-    else:
-        await state.update_data(deliver_mode="TEXT")
-        await message.answer("📝 Ссылки на оригинал нет — режим: **TEXT**.\nДобавить фото?", reply_markup=kb_photos_choice())
-        await state.set_state(AddListing.photos_choice)
-
-# ── 4) Режим LINK/TEXT
-@r_admin.callback_query(F.data.startswith("delivery:"), StateFilter(AddListing.delivery))
-async def set_delivery(call: CallbackQuery, state: FSMContext):
-    mode = call.data.split(":", 1)[1]
-    if mode not in {"LINK", "TEXT"}:
-        return await call.answer()
-    data = await state.get_data()
-    if mode == "LINK" and not data.get("post_url"):
-        await call.message.answer("⚠️ Для «ЛИНК» нужна публичная ссылка на оригинал.")
-        return await call.answer()
-    await state.update_data(deliver_mode=mode)
-    await call.message.answer("Добавить фото?", reply_markup=kb_photos_choice())
+    await state.update_data(deliver_mode="TEXT")  # фиксируем всегда TEXT
+    await message.answer("📸 Добавить фото к посту?", reply_markup=kb_photos_choice())
     await state.set_state(AddListing.photos_choice)
-    await call.answer()
 
 # ── 5) Фото: да/нет
 @r_admin.callback_query(F.data == "photos:yes", StateFilter(AddListing.photos_choice))
@@ -677,10 +651,9 @@ async def build_preview(message: Message, state: FSMContext):
     else:
         await message.answer(channel_text)
 
-    human_mode = "ЛИНК (ссылка на оригинал)" if deliver == "LINK" else "TEXT (текст оригинала + контакт)"
-    await message.answer(
+await message.answer(
         f"ID: {listing_id}\n"
-        f"Режим выдачи: {human_mode}\n"
+        f"Что получит покупатель: текст оригинала + контакт{(' + ссылка на оригинал' if post_url else '')}\n"
         f"Контакт: {link}\n"
         f"{'Оригинал: ' + post_url if post_url else 'Оригинал: —'}",
         reply_markup=kb_preview(listing_id)
