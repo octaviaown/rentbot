@@ -696,51 +696,58 @@ async def publish_listing(call: CallbackQuery):
         await call.message.answer("⚠️ Объявление не найдено в БД.")
         return await call.answer()
 
-    channel_text, link, post_url, deliver, orig_text, photos_json, _status = row
+    channel_text, _link, _post_url, _deliver, _orig_text, photos_json, _status = row
     try:
         photos: List[str] = json.loads(photos_json) if photos_json else []
     except Exception:
         photos = []
 
     btn = kb_deeplink(listing_id)
-    caption_text = channel_text
+    caption_text = channel_text or ""
 
-    # Отправка в канал
-    if photos:
-        if len(photos) == 1:
-            if len(caption_text) <= 1024:
-                await bot.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=photos[0],
-                    caption=caption_text,
-                    reply_markup=btn
-                )
+    # ── Отправка в канал
+    try:
+        if photos:
+            # ====== С ФОТО ======
+            if len(photos) == 1:
+                # 1 фото → можно прикрепить клавиатуру сразу к фото,
+                # если подпись не длиннее лимита Telegram (1024)
+                if len(caption_text) <= 1024:
+                    await bot.send_photo(
+                        chat_id=CHANNEL_ID,
+                        photo=photos[0],
+                        caption=caption_text,
+                        reply_markup=btn
+                    )
+                else:
+                    # Длинная подпись → отправляем текст с кнопкой отдельным сообщением,
+                    # а фото — без кнопки.
+                    await bot.send_message(chat_id=CHANNEL_ID, text=caption_text, reply_markup=btn)
+                    await bot.send_photo(chat_id=CHANNEL_ID, photo=photos[0])
             else:
+                # Альбом: send_media_group НЕ поддерживает клавиатуры.
+                # Сначала отправляем все фото…
+                media = []
+                # можно положить короткую подпись на 1-е фото (если влазит), но кнопка всё равно отдельно
+                first_caption = caption_text if len(caption_text) <= 1024 else ""
+                media.append(InputMediaPhoto(media=photos[0], caption=first_caption))
+                media += [InputMediaPhoto(media=p) for p in photos[1:]]
+                await bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+
+                # …а затем отдельным сообщением отправляем полный текст и кнопку
+                # (так кнопка точно появится под постом в канале).
                 await bot.send_message(chat_id=CHANNEL_ID, text=caption_text, reply_markup=btn)
-                await bot.send_photo(chat_id=CHANNEL_ID, photo=photos[0])
         else:
-            media = []
-            first_caption = caption_text if len(caption_text) <= 1024 else ""
-            media.append(InputMediaPhoto(media=photos[0], caption=first_caption))
-            media += [InputMediaPhoto(media=p) for p in photos[1:]]
-            msgs = await bot.send_media_group(chat_id=CHANNEL_ID, media=media)
+            # ====== БЕЗ ФОТО ======
+            await bot.send_message(chat_id=CHANNEL_ID, text=caption_text, reply_markup=btn)
 
-            if len(caption_text) <= 1024:
-                await bot.edit_message_caption(
-                    chat_id=CHANNEL_ID,
-                    message_id=msgs[0].message_id,
-                    caption=caption_text,
-                    reply_markup=btn
-                )
-            else:
-                await bot.send_message(chat_id=CHANNEL_ID, text=caption_text, reply_markup=btn)
-    else:
-        await bot.send_message(chat_id=CHANNEL_ID, text=caption_text, reply_markup=btn)
+        # статус: опубликовано
+        db_set_status(listing_id, "PUBLISHED")
+        await call.message.answer(f"✅ Объявление {listing_id} опубликовано.")
+    except Exception as e:
+        logging.exception("publish_listing failed")
+        await call.message.answer(f"⚠️ Не удалось опубликовать: {e}")
 
-    # статус: опубликовано
-    db_set_status(listing_id, "PUBLISHED")
-
-    await call.message.answer(f"✅ Объявление {listing_id} опубликовано.")
     await call.answer()
 
 @r_admin.callback_query(F.data == "restart")
@@ -822,3 +829,14 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+# ── main: запуск поллинга
+# async def main():
+#     global BOT_USERNAME
+#     db_init()
+#     me = await bot.get_me()
+#     BOT_USERNAME = me.username
+#     await dp.start_polling(bot)
+
+# if __name__ == "__main__":
+#     import asyncio
+#     asyncio.run(main())
