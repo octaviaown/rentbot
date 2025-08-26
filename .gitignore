@@ -1,0 +1,11 @@
+# secrets
+.env
+*.env
+
+# локальные базы/файлы
+listings.db
+
+# IDE/кеши
+__pycache__/
+*.pyc
+.env.*
