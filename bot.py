@@ -612,6 +612,7 @@ async def cancel_add(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 # ── Сбор предпросмотра
+# ── Сбор предпросмотра
 async def build_preview(message: Message, state: FSMContext):
     data = await state.get_data()
     listing_id   = data.get("listing_id")
@@ -625,7 +626,7 @@ async def build_preview(message: Message, state: FSMContext):
     if not (listing_id and channel_text and link and deliver):
         return await message.answer("⚠️ Не хватает данных (ID/текст/контакт/режим). Начни заново: /add A101")
 
-    # ключевой момент: сохраняем/обновляем как DRAFT В ЭТОЙ ЖЕ таблице
+    # сохраняем/обновляем как DRAFT
     db_upsert(
         listing_id=listing_id,
         channel_text=channel_text,
@@ -637,7 +638,7 @@ async def build_preview(message: Message, state: FSMContext):
         status="DRAFT"
     )
 
-    # показываем предпросмотр
+    # показываем предпросмотр медиа + текста
     if photos:
         media = []
         for i, p in enumerate(photos):
@@ -651,13 +652,15 @@ async def build_preview(message: Message, state: FSMContext):
     else:
         await message.answer(channel_text)
 
-await message.answer(
+    # сводка перед публикацией
+    await message.answer(
         f"ID: {listing_id}\n"
         f"Что получит покупатель: текст оригинала + контакт{(' + ссылка на оригинал' if post_url else '')}\n"
         f"Контакт: {link}\n"
         f"{'Оригинал: ' + post_url if post_url else 'Оригинал: —'}",
         reply_markup=kb_preview(listing_id)
     )
+
     await state.clear()
 
 # ── Публикация в канал
