@@ -681,13 +681,10 @@ async def publish_listing(call: CallbackQuery):
     btn = kb_deeplink(listing_id)
     caption_text = channel_text or ""
 
-    # ── Отправка в канал
     try:
         if photos:
-            # ====== С ФОТО ======
             if len(photos) == 1:
-                # 1 фото → можно прикрепить клавиатуру сразу к фото,
-                # если подпись не длиннее лимита Telegram (1024)
+                # Одно фото → кнопка и текст прямо в фото (если влезает)
                 if len(caption_text) <= 1024:
                     await bot.send_photo(
                         chat_id=CHANNEL_ID,
@@ -696,36 +693,33 @@ async def publish_listing(call: CallbackQuery):
                         reply_markup=btn
                     )
                 else:
-                    # Длинная подпись → отправляем текст с кнопкой отдельным сообщением,
-                    # а фото — без кнопки.
-                    await bot.send_message(chat_id=CHANNEL_ID, text=caption_text, reply_markup=btn)
-                    await bot.send_photo(chat_id=CHANNEL_ID, photo=photos[0])
+                    # слишком длинный текст
+                    await bot.send_message(chat_id=CHANNEL_ID, text=caption_text)
+                    await bot.send_photo(chat_id=CHANNEL_ID, photo=photos[0], reply_markup=btn)
+
             else:
-                # Альбом: send_media_group НЕ поддерживает клавиатуры.
-                # Сначала отправляем все фото…
+                # Альбом: отправляем все фото
                 media = []
-                # можно положить короткую подпись на 1-е фото (если влазит), но кнопка всё равно отдельно
                 first_caption = caption_text if len(caption_text) <= 1024 else ""
                 media.append(InputMediaPhoto(media=photos[0], caption=first_caption))
                 media += [InputMediaPhoto(media=p) for p in photos[1:]]
                 await bot.send_media_group(chat_id=CHANNEL_ID, media=media)
 
-                # …а затем отдельным сообщением отправляем полный текст и кнопку
-                # (так кнопка точно появится под постом в канале).
-                await bot.send_message(chat_id=CHANNEL_ID, text=caption_text, reply_markup=btn)
+                # после альбома — только кнопка, без текста-дубля
+                await bot.send_message(chat_id=CHANNEL_ID, text=" ", reply_markup=btn)
+
         else:
-            # ====== БЕЗ ФОТО ======
+            # Без фото → текст + кнопка
             await bot.send_message(chat_id=CHANNEL_ID, text=caption_text, reply_markup=btn)
 
-        # статус: опубликовано
         db_set_status(listing_id, "PUBLISHED")
         await call.message.answer(f"✅ Объявление {listing_id} опубликовано.")
+
     except Exception as e:
         logging.exception("publish_listing failed")
         await call.message.answer(f"⚠️ Не удалось опубликовать: {e}")
 
     await call.answer()
-
 @r_admin.callback_query(F.data == "restart")
 async def restart_add(call: CallbackQuery):
     await call.message.answer("🔄 Начнём сначала. Укажи новый ID: /add A102")
